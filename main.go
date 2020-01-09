@@ -5,12 +5,14 @@ import (
 	crypto_rand "crypto/rand"
 	"encoding/binary"
 	"fmt"
+	"log"
 	"math/rand"
 	"os"
 	"os/exec"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type Individual struct {
@@ -22,6 +24,7 @@ type Individual struct {
 func (me *Individual) initialize() {
 	me.fill()
 	me.mutate()
+	me.getFitness()
 	//fmt.Println(me.board)
 }
 
@@ -55,14 +58,14 @@ func (me *Individual) getFitness() {
 		for _, col := range row {
 			set[col] = 1
 		}
-		score = score + 2*(9 - len(set))
+		score = score + 2*(9-len(set))
 		set = make(map[int]int)
 	}
 	for i := range me.board {
 		for j := range me.board[i] {
 			set[me.board[j][i]] = 1
 		}
-		score = score + 2*(9 - len(set))
+		score = score + 2*(9-len(set))
 		set = make(map[int]int)
 	}
 	for i := 0; i < 3; i++ {
@@ -80,6 +83,12 @@ func (me *Individual) getFitness() {
 	//fmt.Println(score)
 	me.fitness = score
 
+}
+
+func (p *Population) mutateAll() {
+	for i := 0; i < p.popsize; i++ {
+		p.population[i].mutate()
+	}
 }
 
 type Population struct {
@@ -105,7 +114,7 @@ func (p *Population) importProblem() {
 			s, err := strconv.Atoi(str[i])
 			if err != nil {
 				row = append(row, 0)
-			} else{
+			} else {
 				row = append(row, s)
 			}
 		}
@@ -171,6 +180,7 @@ func (p *Population) repopulate() {
 		parentOne, parentTwo := p.top_individuals[rand.Intn(p.parentsize)], p.top_individuals[rand.Intn(p.parentsize)]
 		ind := Individual{given: p.given, mrate: p.mrate, board: crossoverBoard(parentOne, parentTwo)}
 		ind.mutate()
+		ind.getFitness()
 		p.population[i] = ind
 	}
 }
@@ -201,7 +211,7 @@ func (p *Population) findGiven() {
 }
 
 func (p *Population) getFitnesses() {
-	for i:=0;i<p.popsize;i++ {
+	for i := 0; i < p.popsize; i++ {
 		p.population[i].getFitness()
 	}
 }
@@ -225,20 +235,49 @@ func (p *Population) getTops() {
 }
 
 func (p *Population) initialize() {
+	stop := false
+	stuck := 0
+	prevTop := 0
 	p.given = make(map[[2]int]int)
 	p.importProblem()
 	p.importSolution()
 	p.findGiven()
 	p.populate()
 	for i := 0; i < p.gens; i++ {
-		p.getFitnesses()
+		//p.getFitnesses()
 		p.getTops()
 		p.repopulate()
+		if prevTop == p.top_individuals[0].fitness {
+			stuck = stuck + 1
+		} else {
+			stuck = 0
+		}
+		for _, ind := range p.top_individuals {
+			if ind.fitness == 0 {
+				stop = true
+				break
+			}
+		}
+
 		c := exec.Command("clear")
 		c.Stdout = os.Stdout
 		c.Run()
 		p.printBoard(p.top_individuals[0].board)
-		fmt.Println(p.top_individuals[0].fitness)
+		fmt.Println(p.top_individuals[0].fitness, stuck)
+		prevTop = p.top_individuals[0].fitness
+		if stop {
+			break
+		}
+		if stuck == 100 {
+			fmt.Println("Shuffling...")
+			time.Sleep(1 * time.Second)
+			for i := 0; i < 10; i++ {
+				p.mutateAll()
+			}
+			stuck = 0
+		}
+
+		//fmt.Println(p.top_individuals[0].fitness)
 	}
 }
 
@@ -252,9 +291,12 @@ func init() {
 }
 
 func main() {
+	start := time.Now()
 	x := Population{popsize: 10000, gens: 10000, parentsize: 1000, mrate: 4}
 	//fmt.Println(x)
 	x.initialize()
+	elapsed := time.Since(start)
+	log.Printf("GA took %s", elapsed)
 	//x.population[0].board[0][0] = "69"
 	//fmt.Println(x.problem)
 	//fmt.Println(x.solution)
