@@ -2,26 +2,30 @@ package main
 
 import (
 	"bufio"
+	"container/heap"
 	crypto_rand "crypto/rand"
 	"encoding/binary"
 	"fmt"
+	"log"
 	"math/rand"
 	"os"
 	"os/exec"
-	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type Individual struct {
 	given          map[[2]int]int
 	board          [][]int
 	mrate, fitness int
+	Index          int
 }
 
 func (me *Individual) initialize() {
 	me.fill()
 	me.mutate()
+	me.getFitness()
 	//fmt.Println(me.board)
 }
 
@@ -55,14 +59,14 @@ func (me *Individual) getFitness() {
 		for _, col := range row {
 			set[col] = 1
 		}
-		score = score + 2*(9 - len(set))
+		score = score + 2*(9-len(set))
 		set = make(map[int]int)
 	}
 	for i := range me.board {
 		for j := range me.board[i] {
 			set[me.board[j][i]] = 1
 		}
-		score = score + 2*(9 - len(set))
+		score = score + 2*(9-len(set))
 		set = make(map[int]int)
 	}
 	for i := 0; i < 3; i++ {
@@ -87,7 +91,7 @@ type Population struct {
 	given                                        map[[2]int]int
 	solution                                     [][]int
 	problem                                      [][]int
-	population                                   []Individual
+	population                                   PQ
 	top_individuals                              []Individual
 }
 
@@ -105,7 +109,7 @@ func (p *Population) importProblem() {
 			s, err := strconv.Atoi(str[i])
 			if err != nil {
 				row = append(row, 0)
-			} else{
+			} else {
 				row = append(row, s)
 			}
 		}
@@ -159,20 +163,29 @@ func copyIndividual(ind Individual) Individual {
 }
 
 func (p *Population) populate() {
+	heap.Init(&p.population)
 	for i := 0; i < p.popsize; i++ {
 		ind := Individual{given: p.given, mrate: p.mrate, board: copyBoard(p.problem)}
 		ind.initialize()
-		p.population = append(p.population, ind)
+		//p.population = append(p.population, ind)
+		heap.Push(&p.population,ind)
 	}
 }
 
 func (p *Population) repopulate() {
+	var populus PQ
+	heap.Init(&populus)
+	for i:=0;i<p.parentsize;i++{
+		heap.Push(&populus,copyIndividual(p.top_individuals[i]))
+	}
 	for i := p.parentsize; i < p.popsize; i++ {
 		parentOne, parentTwo := p.top_individuals[rand.Intn(p.parentsize)], p.top_individuals[rand.Intn(p.parentsize)]
 		ind := Individual{given: p.given, mrate: p.mrate, board: crossoverBoard(parentOne, parentTwo)}
 		ind.mutate()
-		p.population[i] = ind
+		ind.getFitness()
+		heap.Push(&populus,ind)
 	}
+	p.population = populus
 }
 
 func crossoverBoard(p1 Individual, p2 Individual) [][]int {
@@ -201,44 +214,106 @@ func (p *Population) findGiven() {
 }
 
 func (p *Population) getFitnesses() {
-	for i:=0;i<p.popsize;i++ {
+	for i := 0; i < p.popsize; i++ {
 		p.population[i].getFitness()
 	}
 }
 
-type ByFitness []Individual
+func (p *Population) mutateAll() {
+	for i := 0; i < p.popsize; i++ {
+		p.population[i].mutate()
+	}
+}
 
-func (me ByFitness) Len() int           { return len(me) }
-func (me ByFitness) Less(i, j int) bool { return me[i].fitness < me[j].fitness }
-func (me ByFitness) Swap(i, j int)      { me[i], me[j] = me[j], me[i] }
+type PQ []*Individual
+
+func (me PQ) Len() int           { return len(me) }
+func (me PQ) Less(i, j int) bool { return me[i].fitness < me[j].fitness }
+func (me PQ) Swap(i, j int) {
+	me[i], me[j] = me[j], me[i]
+	me[i].Index = i
+	me[j].Index = j
+}
+func (pq *PQ) Push(x interface{}) {
+	n := len(*pq)
+	item := x.(Individual)
+	item.Index = n
+	*pq = append(*pq, &item)
+}
+
+func (pq *PQ) Pop() interface{} {
+	old := *pq
+	n := len(old)
+	item := old[n-1]
+	item.Index = -1 // for safety
+	*pq = old[0 : n-1]
+	return item
+}
+func (pq *PQ) update(item *Individual, board[][]int, mrate int, fitness int) {
+	item.board = board
+	item.fitness = fitness
+	heap.Fix(pq, item.Index)
+}
+
+//type ByFitness []Individual
+//
+//func (me ByFitness) Len() int           { return len(me) }
+//func (me ByFitness) Less(i, j int) bool { return me[i].fitness < me[j].fitness }
+//func (me ByFitness) Swap(i, j int)      { me[i], me[j] = me[j], me[i] }
+func (p *Population) getTops() {
+	//sort.Sort(ByFitness(p.population))
+	p.top_individuals = make([]Individual, 0)
+	for i := 0; i < p.parentsize; i++ {
+		p.top_individuals = append(p.top_individuals, *heap.Pop(&p.population).(*Individual))
+	}
+}
 func (p *Population) printFitnesses() {
 	for i := range p.population {
 		fmt.Println(p.population[i].fitness)
 	}
 }
-func (p *Population) getTops() {
-	sort.Sort(ByFitness(p.population))
-	p.top_individuals = make([]Individual, 0)
-	for i := 0; i < p.parentsize; i++ {
-		p.top_individuals = append(p.top_individuals, copyIndividual(p.population[i]))
-	}
-}
 
 func (p *Population) initialize() {
+	stop := false
+	stuck := 0
+	prevTop := 0
 	p.given = make(map[[2]int]int)
 	p.importProblem()
 	p.importSolution()
 	p.findGiven()
 	p.populate()
 	for i := 0; i < p.gens; i++ {
-		p.getFitnesses()
+		//p.getFitnesses()
 		p.getTops()
 		p.repopulate()
+		if prevTop == p.top_individuals[0].fitness {
+			stuck = stuck + 1
+		} else {
+			stuck = 0
+		}
+		for _, ind := range p.top_individuals {
+			if ind.fitness == 0 {
+				stop = true
+				break
+			}
+		}
 		c := exec.Command("clear")
 		c.Stdout = os.Stdout
 		c.Run()
 		p.printBoard(p.top_individuals[0].board)
-		fmt.Println(p.top_individuals[0].fitness)
+		fmt.Println(p.top_individuals[0].fitness, stuck)
+		prevTop = p.top_individuals[0].fitness
+		if stop {
+			break
+		}
+		if stuck == 100 {
+			fmt.Println("Shuffling...")
+			time.Sleep(1 * time.Second)
+			for i := 0; i < 10; i++ {
+				p.mutateAll()
+			}
+			stuck = 0
+		}
 	}
 }
 
@@ -252,9 +327,12 @@ func init() {
 }
 
 func main() {
-	x := Population{popsize: 10000, gens: 10000, parentsize: 1000, mrate: 4}
+	start := time.Now()
+	x := Population{popsize: 1000, gens: 10000, parentsize: 100, mrate: 2}
 	//fmt.Println(x)
 	x.initialize()
+	elapsed := time.Since(start)
+	log.Printf("GA took %s", elapsed)
 	//x.population[0].board[0][0] = "69"
 	//fmt.Println(x.problem)
 	//fmt.Println(x.solution)
@@ -262,5 +340,5 @@ func main() {
 	//fmt.Println(x.population)
 	//fmt.Println(x.top_individuals)
 
-	//bufio.NewReader(os.Stdin).ReadBytes('\n') 
+	//bufio.NewReader(os.Stdin).ReadBytes('\n')
 }
